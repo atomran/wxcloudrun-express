@@ -14,10 +14,12 @@
 请在微信云托管控制台的服务环境变量中配置：
 
 ```text
-OPENAI_API_KEY=你的 OpenAI API Key
-OPENAI_MODEL=gpt-4.1-mini
+GEMINI_API_KEY=你的 Gemini API Key
+GEMINI_MODEL=gemini-3.5-flash
 MAX_BODY_SIZE=18mb
 ```
+
+服务会优先使用 Gemini。如果以后也配置了 OpenAI，可以通过 `AI_PROVIDER=openai` 手动切换。
 
 不要把 API Key、数据库密码或其他密钥提交到 GitHub。
 
