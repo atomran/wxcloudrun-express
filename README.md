@@ -1,3 +1,83 @@
+# 饮食训练日志云托管 Express 服务
+
+这是“饮食训练日志”小程序的云托管后端服务，用于接收小程序上传的截图/照片，并调用视觉模型生成结构化记录草稿。
+
+## 接口
+
+- `GET /health`：健康检查。
+- `POST /api/count`：保留微信云托管模板测试接口。
+- `GET /api/wx_openid`：保留微信云托管模板 OpenID 测试接口。
+- `POST /api/recognize-image`：图片识别接口。
+
+## 环境变量
+
+请在微信云托管控制台的服务环境变量中配置：
+
+```text
+OPENAI_API_KEY=你的 OpenAI API Key
+OPENAI_MODEL=gpt-4.1-mini
+MAX_BODY_SIZE=18mb
+```
+
+不要把 API Key、数据库密码或其他密钥提交到 GitHub。
+
+## 小程序调用示例
+
+```js
+wx.cloud.callContainer({
+  config: {
+    env: "prod-d0gdlrl935d7a2f10"
+  },
+  path: "/api/recognize-image",
+  header: {
+    "X-WX-SERVICE": "express-1h39",
+    "content-type": "application/json"
+  },
+  method: "POST",
+  data: {
+    type: "weight",
+    date: "2026-06-24",
+    hint: "小米体脂秤截图",
+    image: {
+      label: "scale.png",
+      dataUrl: "data:image/png;base64,...",
+      width: 800,
+      height: 1200
+    }
+  }
+})
+```
+
+## 返回结构
+
+```json
+{
+  "code": 0,
+  "data": {
+    "ok": true,
+    "type": "weight",
+    "confidence": 0.86,
+    "summary": "体重 72.8 kg",
+    "warnings": [],
+    "rawText": "图片中的可见文字",
+    "draft": {
+      "date": "2026-06-24",
+      "weight": 72.8,
+      "bodyMetrics": {
+        "bodyFatPercent": 18.6,
+        "bmi": 22.9,
+        "muscleKg": 53.2,
+        "basalMetabolism": 1660,
+        "visceralFat": 7,
+        "bodyAge": 31
+      }
+    }
+  }
+}
+```
+
+---
+
 # wxcloudrun-express
 
 [![GitHub license](https://img.shields.io/github/license/WeixinCloud/wxcloudrun-express)](https://github.com/WeixinCloud/wxcloudrun-express)
