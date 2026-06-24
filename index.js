@@ -6,7 +6,6 @@ const fetch = require("node-fetch");
 
 const app = express();
 const port = process.env.PORT || 80;
-const model = process.env.OPENAI_MODEL || "gpt-4.1-mini";
 const maxBodySize = process.env.MAX_BODY_SIZE || "18mb";
 
 app.use(express.urlencoded({ extended: false, limit: maxBodySize }));
@@ -19,12 +18,16 @@ app.get("/", (_req, res) => {
 });
 
 app.get("/health", (_req, res) => {
+  const provider = getProvider();
   res.send({
     code: 0,
     data: {
       ok: true,
       service: "饮食训练日志识别服务",
-      model,
+      provider,
+      model: getModel(provider),
+      ready: Boolean(getGeminiApiKey() || process.env.OPENAI_API_KEY),
+      hasGeminiKey: Boolean(getGeminiApiKey()),
       hasOpenAIKey: Boolean(process.env.OPENAI_API_KEY),
     },
   });
@@ -85,8 +88,9 @@ app.listen(port, () => {
 });
 
 async function recognizeImage(body) {
-  if (!process.env.OPENAI_API_KEY) {
-    throwHttp(503, "Missing OPENAI_API_KEY");
+  const provider = getProvider();
+  if (!getGeminiApiKey() && !process.env.OPENAI_API_KEY) {
+    throwHttp(503, "Missing GEMINI_API_KEY or OPENAI_API_KEY");
   }
 
   if (!body?.image?.dataUrl || !String(body.image.dataUrl).startsWith("data:image/")) {
@@ -94,6 +98,53 @@ async function recognizeImage(body) {
   }
 
   const prompt = buildPrompt(body.type, body.date, body.hint, body.image.label);
+  const text = provider === "gemini"
+    ? await callGeminiImage(prompt, body.image.dataUrl)
+    : await callOpenAIImage(prompt, body.image.dataUrl);
+  const parsed = parseJsonFromText(text);
+  return normalizeResult(parsed, body.type, body.date, text);
+}
+
+async function callGeminiImage(prompt, dataUrl) {
+  const apiKey = getGeminiApiKey();
+  if (!apiKey) throwHttp(503, "Missing GEMINI_API_KEY");
+
+  const inlineImage = parseDataUrl(dataUrl);
+  const apiResponse = await fetch("https://generativelanguage.googleapis.com/v1beta/interactions", {
+    method: "POST",
+    headers: {
+      "x-goog-api-key": apiKey,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: getModel("gemini"),
+      input: [
+        {
+          type: "text",
+          text: prompt,
+        },
+        {
+          type: "image",
+          data: inlineImage.base64,
+          mime_type: inlineImage.mimeType,
+        },
+      ],
+    }),
+  });
+
+  const payload = await safeJson(apiResponse);
+  if (!apiResponse.ok) {
+    throwHttp(502, payload?.error?.message || `Gemini API HTTP ${apiResponse.status}`);
+  }
+
+  return extractGeminiOutputText(payload);
+}
+
+async function callOpenAIImage(prompt, dataUrl) {
+  if (!process.env.OPENAI_API_KEY) {
+    throwHttp(503, "Missing OPENAI_API_KEY");
+  }
+
   const apiResponse = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: {
@@ -101,7 +152,7 @@ async function recognizeImage(body) {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      model,
+      model: getModel("openai"),
       input: [
         {
           role: "user",
@@ -112,7 +163,7 @@ async function recognizeImage(body) {
             },
             {
               type: "input_image",
-              image_url: body.image.dataUrl,
+              image_url: dataUrl,
             },
           ],
         },
@@ -120,14 +171,37 @@ async function recognizeImage(body) {
     }),
   });
 
-  const payload = await apiResponse.json();
+  const payload = await safeJson(apiResponse);
   if (!apiResponse.ok) {
     throwHttp(502, payload?.error?.message || `OpenAI API HTTP ${apiResponse.status}`);
   }
 
-  const text = extractOutputText(payload);
-  const parsed = parseJsonFromText(text);
-  return normalizeResult(parsed, body.type, body.date, text);
+  return extractOpenAIOutputText(payload);
+}
+
+function getProvider() {
+  const explicit = String(process.env.AI_PROVIDER || "").toLowerCase();
+  if (explicit === "gemini" || explicit === "openai") return explicit;
+  if (getGeminiApiKey()) return "gemini";
+  return "openai";
+}
+
+function getModel(provider) {
+  if (provider === "gemini") return process.env.GEMINI_MODEL || "gemini-3.5-flash";
+  return process.env.OPENAI_MODEL || "gpt-4.1-mini";
+}
+
+function getGeminiApiKey() {
+  return process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || "";
+}
+
+function parseDataUrl(dataUrl) {
+  const match = String(dataUrl || "").match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,([\s\S]+)$/);
+  if (!match) throwHttp(400, "image.dataUrl must be a base64 data URL");
+  return {
+    mimeType: match[1],
+    base64: match[2],
+  };
 }
 
 function buildPrompt(type, date, hint, label) {
@@ -207,7 +281,7 @@ function normalizeResult(result, type, date, rawText) {
   };
 }
 
-function extractOutputText(payload) {
+function extractOpenAIOutputText(payload) {
   if (typeof payload.output_text === "string") return payload.output_text;
   const pieces = [];
   for (const item of payload.output || []) {
@@ -216,6 +290,40 @@ function extractOutputText(payload) {
     }
   }
   return pieces.join("\n").trim();
+}
+
+function extractGeminiOutputText(payload) {
+  if (typeof payload.output_text === "string") return payload.output_text;
+
+  const pieces = [];
+  for (const item of payload.output || []) {
+    for (const content of item.content || []) {
+      if (typeof content.text === "string") pieces.push(content.text);
+    }
+  }
+
+  for (const candidate of payload.candidates || []) {
+    for (const part of candidate.content?.parts || []) {
+      if (typeof part.text === "string") pieces.push(part.text);
+    }
+  }
+
+  const text = pieces.join("\n").trim();
+  if (!text) throwHttp(502, "Gemini did not return text");
+  return text;
+}
+
+async function safeJson(response) {
+  const text = await response.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    return {
+      error: {
+        message: text || `HTTP ${response.status}`,
+      },
+    };
+  }
 }
 
 function parseJsonFromText(text) {
