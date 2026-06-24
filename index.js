@@ -26,6 +26,7 @@ app.get("/health", (_req, res) => {
       service: "饮食训练日志识别服务",
       provider,
       model: getModel(provider),
+      timeoutMs: getAiTimeoutMs(),
       ready: Boolean(getGeminiApiKey() || process.env.OPENAI_API_KEY),
       hasGeminiKey: Boolean(getGeminiApiKey()),
       hasOpenAIKey: Boolean(process.env.OPENAI_API_KEY),
@@ -110,12 +111,13 @@ async function callGeminiImage(prompt, dataUrl) {
   if (!apiKey) throwHttp(503, "Missing GEMINI_API_KEY");
 
   const inlineImage = parseDataUrl(dataUrl);
-  const apiResponse = await fetch("https://generativelanguage.googleapis.com/v1beta/interactions", {
+  const apiResponse = await fetchWithHttpError("Gemini", "https://generativelanguage.googleapis.com/v1beta/interactions", {
     method: "POST",
     headers: {
       "x-goog-api-key": apiKey,
       "Content-Type": "application/json",
     },
+    timeout: getAiTimeoutMs(),
     body: JSON.stringify({
       model: getModel("gemini"),
       input: [
@@ -129,6 +131,13 @@ async function callGeminiImage(prompt, dataUrl) {
           mime_type: inlineImage.mimeType,
         },
       ],
+      response_format: {
+        type: "text",
+        mime_type: "application/json",
+      },
+      generation_config: {
+        thinking_level: process.env.GEMINI_THINKING_LEVEL || "minimal",
+      },
     }),
   });
 
@@ -145,12 +154,13 @@ async function callOpenAIImage(prompt, dataUrl) {
     throwHttp(503, "Missing OPENAI_API_KEY");
   }
 
-  const apiResponse = await fetch("https://api.openai.com/v1/responses", {
+  const apiResponse = await fetchWithHttpError("OpenAI", "https://api.openai.com/v1/responses", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
       "Content-Type": "application/json",
     },
+    timeout: getAiTimeoutMs(),
     body: JSON.stringify({
       model: getModel("openai"),
       input: [
@@ -193,6 +203,12 @@ function getModel(provider) {
 
 function getGeminiApiKey() {
   return process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || "";
+}
+
+function getAiTimeoutMs() {
+  const parsed = Number(process.env.AI_TIMEOUT_MS);
+  if (Number.isFinite(parsed) && parsed >= 5000) return parsed;
+  return 25000;
 }
 
 function parseDataUrl(dataUrl) {
@@ -323,6 +339,18 @@ async function safeJson(response) {
         message: text || `HTTP ${response.status}`,
       },
     };
+  }
+}
+
+async function fetchWithHttpError(provider, url, options) {
+  try {
+    return await fetch(url, options);
+  } catch (error) {
+    const timeoutMs = options?.timeout || getAiTimeoutMs();
+    if (String(error?.message || "").toLowerCase().includes("timeout")) {
+      throwHttp(502, `${provider} request timed out after ${timeoutMs}ms`);
+    }
+    throwHttp(502, `${provider} request failed: ${error.message || "network error"}`);
   }
 }
 
