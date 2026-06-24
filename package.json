@@ -1,17 +1,19 @@
 {
   "name": "wxcloudrun-express",
   "version": "1.0.0",
-  "description": "微信云托管 express 框架模版",
+  "description": "饮食训练日志小程序云托管识图服务",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "check": "node --check index.js"
   },
   "author": "",
   "license": "Apache-2.0",
   "dependencies": {
     "cors": "^2.8.5",
-    "express": "^4.16.4",
+    "express": "^4.19.2",
     "morgan": "^1.10.0",
+    "node-fetch": "^2.7.0",
     "mysql2": "^2.3.2",
     "sequelize": "^6.8.0"
   },
