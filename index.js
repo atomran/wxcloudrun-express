@@ -84,6 +84,18 @@ app.post("/api/recognize-image", async (req, res, next) => {
   }
 });
 
+app.post("/api/recognize-image-url", async (req, res, next) => {
+  try {
+    const result = await recognizeImage(req.body || {});
+    res.send({
+      code: 0,
+      data: result,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.post("/api/recognize-upload", upload.single("image"), async (req, res, next) => {
   try {
     const result = await recognizeUpload(req.body || {}, req.file);
@@ -126,12 +138,13 @@ async function recognizeImage(body) {
     throwHttp(503, `Missing API key for provider: ${provider}`);
   }
 
-  if (!body?.image?.dataUrl || !String(body.image.dataUrl).startsWith("data:image/")) {
-    throwHttp(400, "image.dataUrl is required");
+  const imageSource = body?.image?.dataUrl || body?.image?.url;
+  if (!isSupportedImageSource(imageSource)) {
+    throwHttp(400, "image.dataUrl or image.url is required");
   }
 
   const prompt = buildPrompt(body.type, body.date, body.hint, body.image.label);
-  const text = await callVisionModel(provider, prompt, body.image.dataUrl);
+  const text = await callVisionModel(provider, prompt, imageSource);
   const parsed = parseJsonFromText(text);
   return normalizeResult(parsed, body.type, body.date, text);
 }
@@ -211,7 +224,7 @@ async function callGeminiImage(prompt, dataUrl) {
   const apiKey = getGeminiApiKey();
   if (!apiKey) throwHttp(503, "Missing GEMINI_API_KEY");
 
-  const inlineImage = parseDataUrl(dataUrl);
+  const inlineImage = parseDataUrl(await ensureDataUrl(dataUrl));
   const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(getModel("gemini"))}:generateContent?key=${encodeURIComponent(apiKey)}`;
   const apiResponse = await fetchWithHttpError("Gemini", endpoint, {
     method: "POST",
@@ -443,6 +456,28 @@ function parseDataUrl(dataUrl) {
     mimeType: match[1],
     base64: match[2],
   };
+}
+
+function isSupportedImageSource(source) {
+  const text = String(source || "");
+  return text.startsWith("data:image/") || /^https:\/\/\S+/i.test(text);
+}
+
+async function ensureDataUrl(source) {
+  const text = String(source || "");
+  if (text.startsWith("data:image/")) return text;
+  if (!/^https:\/\/\S+/i.test(text)) throwHttp(400, "Unsupported image source");
+
+  const response = await fetchWithHttpError("Image URL", text, {
+    method: "GET",
+    timeout: getAiTimeoutMs(),
+  });
+  if (!response.ok) {
+    throwHttp(502, `Image URL HTTP ${response.status}`);
+  }
+  const contentType = response.headers.get("content-type") || "image/jpeg";
+  const buffer = await response.buffer();
+  return `data:${contentType};base64,${buffer.toString("base64")}`;
 }
 
 function buildPrompt(type, date, hint, label) {

@@ -8,6 +8,7 @@
 - `POST /api/count`：保留微信云托管模板测试接口。
 - `GET /api/wx_openid`：保留微信云托管模板 OpenID 测试接口。
 - `POST /api/recognize-image`：图片识别接口。
+- `POST /api/recognize-image-url`：图片临时 URL 识别接口，推荐配合微信云存储使用。
 - `POST /api/recognize-upload`：图片文件上传识别接口，供小程序端绕过 `callContainer` 请求体大小限制。
 - `POST /api/training-advice`：根据目标、训练记录、体重和能量消耗生成每周建议和渐进计划。
 
@@ -31,23 +32,29 @@ MAX_BODY_SIZE=24mb
 ## 小程序调用示例
 
 ```js
-wx.uploadFile({
-  url: "https://express-1h39-273993-6-1255447613.sh.run.tcloudbase.com/api/recognize-upload",
-  filePath: tempFilePath,
-  name: "image",
-  formData: {
+wx.cloud.callContainer({
+  config: {
+    env: "prod-d0gdlrl935d7a2f10"
+  },
+  path: "/api/recognize-image-url",
+  header: {
+    "X-WX-SERVICE": "express-1h39",
+    "content-type": "application/json"
+  },
+  method: "POST",
+  data: {
     type: "weight",
     date: "2026-06-24",
     hint: "小米体脂秤截图",
-    label: "scale.png",
-    width: "800",
-    height: "1200"
-  },
-  success: (res) => console.log(JSON.parse(res.data))
+    image: {
+      label: "scale.png",
+      url: "https://tmp-file-url-from-wx-cloud-storage"
+    }
+  }
 })
 ```
 
-小程序端不要把图片 base64 放进 `wx.cloud.callContainer`，较大的截图会触发请求体大小限制。
+小程序端不要把图片 base64 放进 `wx.cloud.callContainer`，较大的截图会触发请求体大小限制。推荐先用 `wx.cloud.uploadFile` 上传到微信云存储，再用 `wx.cloud.getTempFileURL` 获取临时 URL。
 
 ## 返回结构
 
