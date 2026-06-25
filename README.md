@@ -20,7 +20,7 @@ QWEN_MODEL=qwen-vl-plus
 QWEN_TEXT_MODEL=qwen-plus
 AI_PROVIDER=qwen
 AI_TIMEOUT_MS=50000
-MAX_BODY_SIZE=18mb
+MAX_BODY_SIZE=24mb
 ```
 
 服务会优先使用阿里云百炼通义千问视觉模型。如果以后也配置了 Gemini 或 OpenAI，可以通过 `AI_PROVIDER=gemini` 或 `AI_PROVIDER=openai` 手动切换。
