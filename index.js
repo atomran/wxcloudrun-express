@@ -111,32 +111,33 @@ async function callGeminiImage(prompt, dataUrl) {
   if (!apiKey) throwHttp(503, "Missing GEMINI_API_KEY");
 
   const inlineImage = parseDataUrl(dataUrl);
-  const apiResponse = await fetchWithHttpError("Gemini", "https://generativelanguage.googleapis.com/v1beta/interactions", {
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(getModel("gemini"))}:generateContent?key=${encodeURIComponent(apiKey)}`;
+  const apiResponse = await fetchWithHttpError("Gemini", endpoint, {
     method: "POST",
     headers: {
-      "x-goog-api-key": apiKey,
       "Content-Type": "application/json",
     },
     timeout: getAiTimeoutMs(),
     body: JSON.stringify({
-      model: getModel("gemini"),
-      input: [
+      contents: [
         {
-          type: "text",
-          text: prompt,
-        },
-        {
-          type: "image",
-          data: inlineImage.base64,
-          mime_type: inlineImage.mimeType,
+          role: "user",
+          parts: [
+            {
+              text: prompt,
+            },
+            {
+              inline_data: {
+                mime_type: inlineImage.mimeType,
+                data: inlineImage.base64,
+              },
+            },
+          ],
         },
       ],
-      response_format: {
-        type: "text",
-        mime_type: "application/json",
-      },
-      generation_config: {
-        thinking_level: process.env.GEMINI_THINKING_LEVEL || "minimal",
+      generationConfig: {
+        temperature: 0.1,
+        response_mime_type: "application/json",
       },
     }),
   });
@@ -197,7 +198,7 @@ function getProvider() {
 }
 
 function getModel(provider) {
-  if (provider === "gemini") return process.env.GEMINI_MODEL || "gemini-3.5-flash";
+  if (provider === "gemini") return process.env.GEMINI_MODEL || "gemini-2.5-flash";
   return process.env.OPENAI_MODEL || "gpt-4.1-mini";
 }
 
