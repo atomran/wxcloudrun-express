@@ -8,6 +8,7 @@
 - `POST /api/count`：保留微信云托管模板测试接口。
 - `GET /api/wx_openid`：保留微信云托管模板 OpenID 测试接口。
 - `POST /api/recognize-image`：图片识别接口。
+- `POST /api/training-advice`：根据训练记录生成每周建议和渐进计划。
 
 ## 环境变量
 
@@ -16,6 +17,7 @@
 ```text
 DASHSCOPE_API_KEY=你的阿里云百炼 API Key
 QWEN_MODEL=qwen-vl-plus
+QWEN_TEXT_MODEL=qwen-plus
 AI_PROVIDER=qwen
 AI_TIMEOUT_MS=50000
 MAX_BODY_SIZE=18mb
