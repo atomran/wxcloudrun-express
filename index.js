@@ -3,10 +3,17 @@ const express = require("express");
 const cors = require("cors");
 const morgan = require("morgan");
 const fetch = require("node-fetch");
+const multer = require("multer");
 
 const app = express();
 const port = process.env.PORT || 80;
 const maxBodySize = process.env.MAX_BODY_SIZE || "24mb";
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: parseSizeToBytes(maxBodySize, 24 * 1024 * 1024),
+  },
+});
 
 app.use(express.urlencoded({ extended: false, limit: maxBodySize }));
 app.use(express.json({ limit: maxBodySize }));
@@ -77,6 +84,18 @@ app.post("/api/recognize-image", async (req, res, next) => {
   }
 });
 
+app.post("/api/recognize-upload", upload.single("image"), async (req, res, next) => {
+  try {
+    const result = await recognizeUpload(req.body || {}, req.file);
+    res.send({
+      code: 0,
+      data: result,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.post("/api/training-advice", async (req, res, next) => {
   try {
     const result = await generateTrainingAdvice(req.body || {});
@@ -115,6 +134,29 @@ async function recognizeImage(body) {
   const text = await callVisionModel(provider, prompt, body.image.dataUrl);
   const parsed = parseJsonFromText(text);
   return normalizeResult(parsed, body.type, body.date, text);
+}
+
+async function recognizeUpload(body, file) {
+  if (!file || !file.buffer || !file.buffer.length) {
+    throwHttp(400, "image file is required");
+  }
+
+  if (!String(file.mimetype || "").startsWith("image/")) {
+    throwHttp(400, "uploaded file must be an image");
+  }
+
+  return recognizeImage({
+    type: body.type,
+    date: body.date,
+    hint: body.hint,
+    image: {
+      label: body.label || file.originalname || "upload.jpg",
+      dataUrl: `data:${file.mimetype};base64,${file.buffer.toString("base64")}`,
+      width: Number(body.width) || null,
+      height: Number(body.height) || null,
+      uploadSize: file.size,
+    },
+  });
 }
 
 async function callVisionModel(provider, prompt, dataUrl) {
@@ -379,6 +421,19 @@ function getAiTimeoutMs() {
   const parsed = Number(process.env.AI_TIMEOUT_MS);
   if (Number.isFinite(parsed) && parsed >= 5000) return parsed;
   return 25000;
+}
+
+function parseSizeToBytes(value, fallback) {
+  const text = String(value || "").trim().toLowerCase();
+  const match = text.match(/^([0-9]+(?:\.[0-9]+)?)(b|kb|mb|gb)?$/);
+  if (!match) return fallback;
+  const size = Number(match[1]);
+  if (!Number.isFinite(size)) return fallback;
+  const unit = match[2] || "b";
+  if (unit === "gb") return Math.floor(size * 1024 * 1024 * 1024);
+  if (unit === "mb") return Math.floor(size * 1024 * 1024);
+  if (unit === "kb") return Math.floor(size * 1024);
+  return Math.floor(size);
 }
 
 function parseDataUrl(dataUrl) {
