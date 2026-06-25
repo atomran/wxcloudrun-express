@@ -27,7 +27,8 @@ app.get("/health", (_req, res) => {
       provider,
       model: getModel(provider),
       timeoutMs: getAiTimeoutMs(),
-      ready: Boolean(getGeminiApiKey() || process.env.OPENAI_API_KEY),
+      ready: hasProviderKey(provider),
+      hasDashScopeKey: Boolean(getDashScopeApiKey()),
       hasGeminiKey: Boolean(getGeminiApiKey()),
       hasOpenAIKey: Boolean(process.env.OPENAI_API_KEY),
     },
@@ -90,8 +91,8 @@ app.listen(port, () => {
 
 async function recognizeImage(body) {
   const provider = getProvider();
-  if (!getGeminiApiKey() && !process.env.OPENAI_API_KEY) {
-    throwHttp(503, "Missing GEMINI_API_KEY or OPENAI_API_KEY");
+  if (!hasProviderKey(provider)) {
+    throwHttp(503, `Missing API key for provider: ${provider}`);
   }
 
   if (!body?.image?.dataUrl || !String(body.image.dataUrl).startsWith("data:image/")) {
@@ -99,11 +100,57 @@ async function recognizeImage(body) {
   }
 
   const prompt = buildPrompt(body.type, body.date, body.hint, body.image.label);
-  const text = provider === "gemini"
-    ? await callGeminiImage(prompt, body.image.dataUrl)
-    : await callOpenAIImage(prompt, body.image.dataUrl);
+  const text = await callVisionModel(provider, prompt, body.image.dataUrl);
   const parsed = parseJsonFromText(text);
   return normalizeResult(parsed, body.type, body.date, text);
+}
+
+async function callVisionModel(provider, prompt, dataUrl) {
+  if (provider === "qwen") return callQwenImage(prompt, dataUrl);
+  if (provider === "gemini") return callGeminiImage(prompt, dataUrl);
+  return callOpenAIImage(prompt, dataUrl);
+}
+
+async function callQwenImage(prompt, dataUrl) {
+  const apiKey = getDashScopeApiKey();
+  if (!apiKey) throwHttp(503, "Missing DASHSCOPE_API_KEY");
+
+  const apiResponse = await fetchWithHttpError("DashScope Qwen-VL", "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    timeout: getAiTimeoutMs(),
+    body: JSON.stringify({
+      model: getModel("qwen"),
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: prompt,
+            },
+            {
+              type: "image_url",
+              image_url: {
+                url: dataUrl,
+              },
+            },
+          ],
+        },
+      ],
+      temperature: 0.1,
+    }),
+  });
+
+  const payload = await safeJson(apiResponse);
+  if (!apiResponse.ok) {
+    throwHttp(502, payload?.error?.message || `DashScope API HTTP ${apiResponse.status}`);
+  }
+
+  return extractOpenAIChatText(payload, "DashScope Qwen-VL");
 }
 
 async function callGeminiImage(prompt, dataUrl) {
@@ -192,18 +239,31 @@ async function callOpenAIImage(prompt, dataUrl) {
 
 function getProvider() {
   const explicit = String(process.env.AI_PROVIDER || "").toLowerCase();
+  if (explicit === "qwen" || explicit === "dashscope" || explicit === "aliyun") return "qwen";
   if (explicit === "gemini" || explicit === "openai") return explicit;
+  if (getDashScopeApiKey()) return "qwen";
   if (getGeminiApiKey()) return "gemini";
   return "openai";
 }
 
 function getModel(provider) {
+  if (provider === "qwen") return process.env.QWEN_MODEL || process.env.DASHSCOPE_MODEL || "qwen-vl-plus";
   if (provider === "gemini") return process.env.GEMINI_MODEL || "gemini-2.5-flash";
   return process.env.OPENAI_MODEL || "gpt-4.1-mini";
 }
 
+function getDashScopeApiKey() {
+  return process.env.DASHSCOPE_API_KEY || process.env.DASHSCOPE_API_KEY_ID || "";
+}
+
 function getGeminiApiKey() {
   return process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || "";
+}
+
+function hasProviderKey(provider) {
+  if (provider === "qwen") return Boolean(getDashScopeApiKey());
+  if (provider === "gemini") return Boolean(getGeminiApiKey());
+  return Boolean(process.env.OPENAI_API_KEY);
 }
 
 function getAiTimeoutMs() {
@@ -307,6 +367,18 @@ function extractOpenAIOutputText(payload) {
     }
   }
   return pieces.join("\n").trim();
+}
+
+function extractOpenAIChatText(payload, provider) {
+  const content = payload?.choices?.[0]?.message?.content;
+  if (typeof content === "string" && content.trim()) return content.trim();
+  if (Array.isArray(content)) {
+    const pieces = content
+      .map((part) => typeof part?.text === "string" ? part.text : "")
+      .filter(Boolean);
+    if (pieces.length) return pieces.join("\n").trim();
+  }
+  throwHttp(502, `${provider} did not return text`);
 }
 
 function extractGeminiOutputText(payload) {
