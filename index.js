@@ -257,7 +257,8 @@ async function generateTrainingAdvice(body) {
 
   const records = Array.isArray(body.records) ? body.records.slice(0, 14) : [];
   const current = body.current || {};
-  const prompt = buildTrainingAdvicePrompt(records, current, body.estimatedEnergy);
+  const goals = body.goals || {};
+  const prompt = buildTrainingAdvicePrompt(records, current, body.estimatedEnergy, goals);
   const text = await callTextModel(provider, prompt);
   const parsed = parseJsonFromText(text);
 
@@ -451,15 +452,17 @@ function buildPrompt(type, date, hint, label) {
   ].join("\n");
 }
 
-function buildTrainingAdvicePrompt(records, current, estimatedEnergy) {
+function buildTrainingAdvicePrompt(records, current, estimatedEnergy, goals) {
   return [
     "你是个人训练日志应用里的训练建议模块。请根据用户最近记录、当前训练内容、体重和估算能量消耗，生成下一周训练建议和渐进计划。",
     "要求：只返回严格 JSON，不要 Markdown。建议要保守、可执行、避免医疗诊断；如果数据不足要明确说明。",
     "重点考虑：训练频率、训练时长、强度、力量训练、攀岩、恢复、体重变化、饮食热量和蛋白质。",
+    "如果用户设置了每日热量、蛋白、目标体重或每周训练分钟数，请围绕这些目标给出可执行建议。",
     "如果出现明显疲劳、训练量过高、睡眠差或连续高强度，要建议降载或休息。",
     "输入数据：",
     JSON.stringify({
       current,
+      goals,
       estimatedEnergy,
       recentRecords: records,
     }),

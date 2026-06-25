@@ -8,7 +8,7 @@
 - `POST /api/count`：保留微信云托管模板测试接口。
 - `GET /api/wx_openid`：保留微信云托管模板 OpenID 测试接口。
 - `POST /api/recognize-image`：图片识别接口。
-- `POST /api/training-advice`：根据训练记录生成每周建议和渐进计划。
+- `POST /api/training-advice`：根据目标、训练记录、体重和能量消耗生成每周建议和渐进计划。
 
 ## 环境变量
 
@@ -79,6 +79,38 @@ wx.cloud.callContainer({
       }
     }
   }
+}
+```
+
+## 训练建议请求示例
+
+```json
+{
+  "current": {
+    "date": "2026-06-25",
+    "weight": 72.5,
+    "diet": {
+      "calories": 1850,
+      "protein": 128
+    },
+    "training": {
+      "type": "strength",
+      "durationMinutes": 60,
+      "intensity": 4,
+      "completed": "深蹲、卧推、划船"
+    }
+  },
+  "goals": {
+    "calorieGoal": "2100",
+    "proteinGoal": "130",
+    "weeklyTrainingMinutesGoal": "240",
+    "targetWeight": "68"
+  },
+  "estimatedEnergy": {
+    "value": 360,
+    "text": "约 360 kcal"
+  },
+  "records": []
 }
 ```
 
