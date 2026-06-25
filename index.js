@@ -6,7 +6,7 @@ const fetch = require("node-fetch");
 
 const app = express();
 const port = process.env.PORT || 80;
-const maxBodySize = process.env.MAX_BODY_SIZE || "18mb";
+const maxBodySize = process.env.MAX_BODY_SIZE || "24mb";
 
 app.use(express.urlencoded({ extended: false, limit: maxBodySize }));
 app.use(express.json({ limit: maxBodySize }));
