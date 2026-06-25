@@ -14,14 +14,14 @@
 请在微信云托管控制台的服务环境变量中配置：
 
 ```text
-GEMINI_API_KEY=你的 Gemini API Key
-GEMINI_MODEL=gemini-2.5-flash
-AI_PROVIDER=gemini
-AI_TIMEOUT_MS=25000
+DASHSCOPE_API_KEY=你的阿里云百炼 API Key
+QWEN_MODEL=qwen-vl-plus
+AI_PROVIDER=qwen
+AI_TIMEOUT_MS=50000
 MAX_BODY_SIZE=18mb
 ```
 
-服务会优先使用 Gemini。如果以后也配置了 OpenAI，可以通过 `AI_PROVIDER=openai` 手动切换。
+服务会优先使用阿里云百炼通义千问视觉模型。如果以后也配置了 Gemini 或 OpenAI，可以通过 `AI_PROVIDER=gemini` 或 `AI_PROVIDER=openai` 手动切换。
 
 不要把 API Key、数据库密码或其他密钥提交到 GitHub。
 
