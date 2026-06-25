@@ -198,7 +198,7 @@ async function estimateDietText(body) {
   const prompt = buildDietTextPrompt(body.date, body.mealLabel, text);
   const modelText = await callTextModel(provider, prompt);
   const parsed = parseJsonFromText(modelText);
-  return normalizeResult(parsed, "diet", body.date, modelText);
+  return calibrateDietTextResult(normalizeResult(parsed, "diet", body.date, modelText), text, body.mealLabel);
 }
 
 async function callVisionModel(provider, prompt, dataUrl) {
@@ -516,6 +516,7 @@ function buildDietTextPrompt(date, mealLabel, text) {
     `餐别: ${mealLabel || "饮食"}`,
     `用户描述: ${text}`,
     "要求：如果份量不明确，请按常见中国日常份量保守估算；不要编造非常精确的数值；warnings 里说明这是估算。",
+    "重要校准：主食不能低估。贝果/面包通常约 250-280 kcal/100g；70g 贝果通常约 180 kcal。熟米饭约 116 kcal/100g，鸡蛋约 70 kcal/个。",
     "meals 字段请写成适合放进饮食日志的一行摘要，包含餐别和主要食物。",
     "JSON schema:",
     JSON.stringify({
@@ -667,6 +668,167 @@ function normalizeResult(result, type, date, rawText) {
     rawText: result.rawText || rawText || "",
     draft,
   };
+}
+
+const DIET_REFERENCE_FOODS = [
+  { aliases: ["贝果", "bagel"], per100g: { calories: 260, protein: 10, carbs: 52, fat: 2 } },
+  { aliases: ["吐司", "面包"], per100g: { calories: 265, protein: 9, carbs: 49, fat: 3.5 } },
+  { aliases: ["米饭", "白米饭", "熟米饭"], per100g: { calories: 116, protein: 2.6, carbs: 25.6, fat: 0.3 } },
+  { aliases: ["鸡胸", "鸡胸肉"], per100g: { calories: 165, protein: 31, carbs: 0, fat: 3.6 } },
+  { aliases: ["牛奶"], per100g: { calories: 54, protein: 3.3, carbs: 5, fat: 3.2 } },
+  { aliases: ["香蕉"], per100g: { calories: 93, protein: 1.2, carbs: 22, fat: 0.2 } },
+  { aliases: ["苹果"], per100g: { calories: 53, protein: 0.3, carbs: 14, fat: 0.2 } }
+];
+
+const DIET_REFERENCE_UNITS = [
+  { aliases: ["鸡蛋", "蛋"], units: ["个", "颗", "枚"], each: { calories: 70, protein: 6.3, carbs: 0.6, fat: 4.8 } }
+];
+
+function calibrateDietTextResult(result, text, mealLabel) {
+  const reference = estimateReferenceNutrition(text);
+  if (!reference || reference.calories <= 0) return result;
+
+  const draft = result.draft || {};
+  const diet = draft.diet || {};
+  const modelCalories = Number(diet.calories);
+  const shouldUseReference = !Number.isFinite(modelCalories) || modelCalories < reference.calories * 0.65;
+  if (!shouldUseReference) return result;
+
+  const next = {
+    ...result,
+    warnings: [
+      ...new Set([...(result.warnings || []), `已按常见食物营养表校准：${reference.evidence.join("、")}`])
+    ],
+    summary: `${mealLabel || "饮食"}约 ${Math.round(reference.calories)} kcal`,
+    draft: {
+      ...draft,
+      diet: {
+        ...diet,
+        calories: roundMacro(reference.calories),
+        protein: roundMacro(reference.protein),
+        carbs: roundMacro(reference.carbs),
+        fat: roundMacro(reference.fat),
+        meals: diet.meals || `${mealLabel || "饮食"}: ${text}`
+      }
+    }
+  };
+  return next;
+}
+
+function estimateReferenceNutrition(text) {
+  const value = String(text || "").replace(/\s+/g, "");
+  const total = { calories: 0, protein: 0, carbs: 0, fat: 0, evidence: [] };
+
+  for (const food of DIET_REFERENCE_FOODS) {
+    const alias = food.aliases.find((item) => value.includes(item.toLowerCase()) || value.includes(item));
+    if (!alias) continue;
+    const grams = parseFoodGrams(value, food.aliases);
+    if (!grams) continue;
+    addPer100g(total, food.per100g, grams);
+    total.evidence.push(`${grams}g${alias}`);
+  }
+
+  for (const food of DIET_REFERENCE_UNITS) {
+    const alias = food.aliases.find((item) => value.includes(item));
+    if (!alias) continue;
+    const count = parseFoodCount(value, food.aliases, food.units);
+    if (!count) continue;
+    addEach(total, food.each, count);
+    total.evidence.push(`${count}${food.units[0]}${alias}`);
+  }
+
+  return total.calories > 0 ? total : null;
+}
+
+function parseFoodGrams(text, aliases) {
+  for (const alias of aliases) {
+    const patterns = [
+      new RegExp(`([0-9]+(?:\\.[0-9]+)?)\\s*(?:g|克)${escapeRegex(alias)}`, "i"),
+      new RegExp(`${escapeRegex(alias)}([0-9]+(?:\\.[0-9]+)?)\\s*(?:g|克)`, "i"),
+    ];
+    for (const pattern of patterns) {
+      const match = text.match(pattern);
+      if (match) return Number(match[1]);
+    }
+  }
+  return null;
+}
+
+function parseFoodCount(text, aliases, units) {
+  for (const alias of aliases) {
+    for (const unit of units) {
+      const patterns = [
+        {
+          pattern: new RegExp(`([0-9]+(?:\\.[0-9]+)?)${unit}${escapeRegex(alias)}`),
+          parse: Number,
+        },
+        {
+          pattern: new RegExp(`${escapeRegex(alias)}([0-9]+(?:\\.[0-9]+)?)${unit}`),
+          parse: Number,
+        },
+        {
+          pattern: new RegExp(`([一二两三四五六七八九十半]+)${unit}${escapeRegex(alias)}`),
+          parse: parseChineseNumber,
+        },
+        {
+          pattern: new RegExp(`${escapeRegex(alias)}([一二两三四五六七八九十半]+)${unit}`),
+          parse: parseChineseNumber,
+        },
+      ];
+      for (const item of patterns) {
+        const match = text.match(item.pattern);
+        if (match) return item.parse(match[1]);
+      }
+    }
+  }
+  return null;
+}
+
+function parseChineseNumber(value) {
+  const text = String(value || "");
+  if (text === "半") return 0.5;
+  const digitMap = {
+    一: 1,
+    二: 2,
+    两: 2,
+    三: 3,
+    四: 4,
+    五: 5,
+    六: 6,
+    七: 7,
+    八: 8,
+    九: 9,
+  };
+  if (!text.includes("十")) return digitMap[text] || null;
+
+  const [tensText, onesText] = text.split("十");
+  const tens = tensText ? digitMap[tensText] : 1;
+  const ones = onesText ? digitMap[onesText] : 0;
+  if (!tens || ones === undefined) return null;
+  return tens * 10 + ones;
+}
+
+function addPer100g(total, per100g, grams) {
+  const factor = grams / 100;
+  total.calories += per100g.calories * factor;
+  total.protein += per100g.protein * factor;
+  total.carbs += per100g.carbs * factor;
+  total.fat += per100g.fat * factor;
+}
+
+function addEach(total, each, count) {
+  total.calories += each.calories * count;
+  total.protein += each.protein * count;
+  total.carbs += each.carbs * count;
+  total.fat += each.fat * count;
+}
+
+function roundMacro(value) {
+  return Math.round(Number(value) * 10) / 10;
+}
+
+function escapeRegex(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function extractOpenAIOutputText(payload) {
