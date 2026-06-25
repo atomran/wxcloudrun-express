@@ -21,7 +21,8 @@ DASHSCOPE_API_KEY=你的阿里云百炼 API Key
 QWEN_MODEL=qwen-vl-plus
 QWEN_TEXT_MODEL=qwen-plus
 AI_PROVIDER=qwen
-AI_TIMEOUT_MS=50000
+AI_TIMEOUT_MS=12000
+AI_TIMEOUT_MAX_MS=12000
 MAX_BODY_SIZE=24mb
 ```
 
@@ -55,6 +56,8 @@ wx.cloud.callContainer({
 ```
 
 小程序端不要把图片 base64 放进 `wx.cloud.callContainer`，较大的截图会触发请求体大小限制。推荐先用 `wx.cloud.uploadFile` 上传到微信云存储，再用 `wx.cloud.getTempFileURL` 获取临时 URL。
+
+微信小程序/公众号调用 `CallContainer` 的最长等待时间是 15 秒，后端默认会把 AI 请求超时控制在 12 秒内。正式测试时建议把云托管最小实例数设为 `1`，否则服务缩容到 0 后的冷启动也会消耗这 15 秒窗口。
 
 ## 返回结构
 

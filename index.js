@@ -461,8 +461,10 @@ function hasProviderKey(provider) {
 
 function getAiTimeoutMs() {
   const parsed = Number(process.env.AI_TIMEOUT_MS);
-  if (Number.isFinite(parsed) && parsed >= 5000) return parsed;
-  return 25000;
+  const requested = Number.isFinite(parsed) && parsed >= 5000 ? parsed : 12000;
+  const maxParsed = Number(process.env.AI_TIMEOUT_MAX_MS);
+  const max = Number.isFinite(maxParsed) && maxParsed >= 5000 ? maxParsed : 12000;
+  return Math.min(requested, max);
 }
 
 function parseSizeToBytes(value, fallback) {
