@@ -77,6 +77,18 @@ app.post("/api/recognize-image", async (req, res, next) => {
   }
 });
 
+app.post("/api/training-advice", async (req, res, next) => {
+  try {
+    const result = await generateTrainingAdvice(req.body || {});
+    res.send({
+      code: 0,
+      data: result,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.use((error, _req, res, _next) => {
   const status = error.statusCode || 500;
   res.status(status).send({
@@ -237,6 +249,97 @@ async function callOpenAIImage(prompt, dataUrl) {
   return extractOpenAIOutputText(payload);
 }
 
+async function generateTrainingAdvice(body) {
+  const provider = getProvider();
+  if (!hasProviderKey(provider)) {
+    throwHttp(503, `Missing API key for provider: ${provider}`);
+  }
+
+  const records = Array.isArray(body.records) ? body.records.slice(0, 14) : [];
+  const current = body.current || {};
+  const prompt = buildTrainingAdvicePrompt(records, current, body.estimatedEnergy);
+  const text = await callTextModel(provider, prompt);
+  const parsed = parseJsonFromText(text);
+
+  return normalizeTrainingAdvice(parsed, text);
+}
+
+async function callTextModel(provider, prompt) {
+  if (provider === "qwen") return callQwenText(prompt);
+  if (provider === "openai") return callOpenAIText(prompt);
+  throwHttp(400, `Training advice is not configured for provider: ${provider}`);
+}
+
+async function callQwenText(prompt) {
+  const apiKey = getDashScopeApiKey();
+  if (!apiKey) throwHttp(503, "Missing DASHSCOPE_API_KEY");
+
+  const apiResponse = await fetchWithHttpError("DashScope Qwen", "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    timeout: getAiTimeoutMs(),
+    body: JSON.stringify({
+      model: getTextModel("qwen"),
+      messages: [
+        {
+          role: "user",
+          content: prompt,
+        },
+      ],
+      temperature: 0.25,
+      response_format: {
+        type: "json_object",
+      },
+    }),
+  });
+
+  const payload = await safeJson(apiResponse);
+  if (!apiResponse.ok) {
+    throwHttp(502, payload?.error?.message || `DashScope API HTTP ${apiResponse.status}`);
+  }
+
+  return extractOpenAIChatText(payload, "DashScope Qwen");
+}
+
+async function callOpenAIText(prompt) {
+  if (!process.env.OPENAI_API_KEY) {
+    throwHttp(503, "Missing OPENAI_API_KEY");
+  }
+
+  const apiResponse = await fetchWithHttpError("OpenAI", "https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    timeout: getAiTimeoutMs(),
+    body: JSON.stringify({
+      model: getTextModel("openai"),
+      input: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: prompt,
+            },
+          ],
+        },
+      ],
+    }),
+  });
+
+  const payload = await safeJson(apiResponse);
+  if (!apiResponse.ok) {
+    throwHttp(502, payload?.error?.message || `OpenAI API HTTP ${apiResponse.status}`);
+  }
+
+  return extractOpenAIOutputText(payload);
+}
+
 function getProvider() {
   const explicit = String(process.env.AI_PROVIDER || "").toLowerCase();
   if (explicit === "qwen" || explicit === "dashscope" || explicit === "aliyun") return "qwen";
@@ -250,6 +353,11 @@ function getModel(provider) {
   if (provider === "qwen") return process.env.QWEN_MODEL || process.env.DASHSCOPE_MODEL || "qwen-vl-plus";
   if (provider === "gemini") return process.env.GEMINI_MODEL || "gemini-2.5-flash";
   return process.env.OPENAI_MODEL || "gpt-4.1-mini";
+}
+
+function getTextModel(provider) {
+  if (provider === "qwen") return process.env.QWEN_TEXT_MODEL || "qwen-plus";
+  return process.env.OPENAI_TEXT_MODEL || process.env.OPENAI_MODEL || "gpt-4.1-mini";
 }
 
 function getDashScopeApiKey() {
@@ -341,6 +449,56 @@ function buildPrompt(type, date, hint, label) {
       },
     }),
   ].join("\n");
+}
+
+function buildTrainingAdvicePrompt(records, current, estimatedEnergy) {
+  return [
+    "你是个人训练日志应用里的训练建议模块。请根据用户最近记录、当前训练内容、体重和估算能量消耗，生成下一周训练建议和渐进计划。",
+    "要求：只返回严格 JSON，不要 Markdown。建议要保守、可执行、避免医疗诊断；如果数据不足要明确说明。",
+    "重点考虑：训练频率、训练时长、强度、力量训练、攀岩、恢复、体重变化、饮食热量和蛋白质。",
+    "如果出现明显疲劳、训练量过高、睡眠差或连续高强度，要建议降载或休息。",
+    "输入数据：",
+    JSON.stringify({
+      current,
+      estimatedEnergy,
+      recentRecords: records,
+    }),
+    "JSON schema:",
+    JSON.stringify({
+      summary: "one sentence",
+      weeklyAdvice: ["string"],
+      progressionPlan: [
+        {
+          day: "周一",
+          focus: "strength | climbing | recovery | cardio | rest",
+          session: "specific plan",
+          targetMinutes: 60,
+          intensity: 3,
+          progression: "how to progress",
+        },
+      ],
+      estimatedEnergyComment: "string",
+      recoveryFlags: ["string"],
+      nutritionNotes: ["string"],
+      nextCheckIn: "what to review next week",
+      disclaimer: "short caution",
+    }),
+  ].join("\n");
+}
+
+function normalizeTrainingAdvice(result, rawText) {
+  return {
+    ok: true,
+    summary: result.summary || "",
+    weeklyAdvice: Array.isArray(result.weeklyAdvice) ? result.weeklyAdvice : [],
+    progressionPlan: Array.isArray(result.progressionPlan) ? result.progressionPlan : [],
+    estimatedEnergyComment: result.estimatedEnergyComment || "",
+    recoveryFlags: Array.isArray(result.recoveryFlags) ? result.recoveryFlags : [],
+    nutritionNotes: Array.isArray(result.nutritionNotes) ? result.nutritionNotes : [],
+    nextCheckIn: result.nextCheckIn || "",
+    disclaimer: result.disclaimer || "建议仅用于训练记录和计划参考，如有不适请降低强度或咨询专业人士。",
+    rawText,
+  };
 }
 
 function normalizeResult(result, type, date, rawText) {
