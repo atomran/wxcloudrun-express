@@ -108,6 +108,18 @@ app.post("/api/recognize-upload", upload.single("image"), async (req, res, next)
   }
 });
 
+app.post("/api/estimate-diet-text", async (req, res, next) => {
+  try {
+    const result = await estimateDietText(req.body || {});
+    res.send({
+      code: 0,
+      data: result,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.post("/api/training-advice", async (req, res, next) => {
   try {
     const result = await generateTrainingAdvice(req.body || {});
@@ -170,6 +182,23 @@ async function recognizeUpload(body, file) {
       uploadSize: file.size,
     },
   });
+}
+
+async function estimateDietText(body) {
+  const provider = getProvider();
+  if (!hasProviderKey(provider)) {
+    throwHttp(503, `Missing API key for provider: ${provider}`);
+  }
+
+  const text = String(body.text || "").trim();
+  if (!text) {
+    throwHttp(400, "text is required");
+  }
+
+  const prompt = buildDietTextPrompt(body.date, body.mealLabel, text);
+  const modelText = await callTextModel(provider, prompt);
+  const parsed = parseJsonFromText(modelText);
+  return normalizeResult(parsed, "diet", body.date, modelText);
 }
 
 async function callVisionModel(provider, prompt, dataUrl) {
@@ -478,6 +507,37 @@ async function ensureDataUrl(source) {
   const contentType = response.headers.get("content-type") || "image/jpeg";
   const buffer = await response.buffer();
   return `data:${contentType};base64,${buffer.toString("base64")}`;
+}
+
+function buildDietTextPrompt(date, mealLabel, text) {
+  return [
+    "你是个人饮食日志应用的营养估算模块。请根据用户手工描述的食物，估算这一餐的总热量、蛋白、碳水、脂肪，并返回严格 JSON，不要 Markdown。",
+    `默认日期: ${date || ""}`,
+    `餐别: ${mealLabel || "饮食"}`,
+    `用户描述: ${text}`,
+    "要求：如果份量不明确，请按常见中国日常份量保守估算；不要编造非常精确的数值；warnings 里说明这是估算。",
+    "meals 字段请写成适合放进饮食日志的一行摘要，包含餐别和主要食物。",
+    "JSON schema:",
+    JSON.stringify({
+      type: "diet",
+      date: "YYYY-MM-DD",
+      confidence: 0.0,
+      summary: "short human readable summary",
+      warnings: ["string"],
+      rawText: "user food text",
+      draft: {
+        date: "YYYY-MM-DD",
+        diet: {
+          calories: null,
+          protein: null,
+          carbs: null,
+          fat: null,
+          meals: "",
+        },
+        notes: "",
+      },
+    }),
+  ].join("\n");
 }
 
 function buildPrompt(type, date, hint, label) {
