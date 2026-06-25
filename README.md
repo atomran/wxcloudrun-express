@@ -15,7 +15,9 @@
 
 ```text
 GEMINI_API_KEY=你的 Gemini API Key
-GEMINI_MODEL=gemini-3.5-flash
+GEMINI_MODEL=gemini-2.5-flash
+AI_PROVIDER=gemini
+AI_TIMEOUT_MS=25000
 MAX_BODY_SIZE=18mb
 ```
 
