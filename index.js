@@ -422,8 +422,10 @@ async function upsertPhotos(openid, photos) {
 
 function requireOpenid(req) {
   const fromHeader = req.headers["x-wx-openid"];
-  if (fromHeader) return String(fromHeader);
-  if (process.env.NODE_ENV !== "production" && req.body && req.body.openid) return String(req.body.openid);
+  const fromWx = Boolean(req.headers["x-wx-source"]);
+  if (fromHeader && fromWx) return String(fromHeader);
+  if (process.env.ALLOW_DEV_OPENID === "1" && fromHeader) return String(fromHeader);
+  if (process.env.ALLOW_DEV_OPENID === "1" && req.body && req.body.openid) return String(req.body.openid);
   throwHttp(401, "Missing WeChat openid. Please call through wx.cloud.callContainer.");
 }
 
