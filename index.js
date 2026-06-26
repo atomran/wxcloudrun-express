@@ -4,6 +4,7 @@ const cors = require("cors");
 const morgan = require("morgan");
 const fetch = require("node-fetch");
 const multer = require("multer");
+const mysql = require("mysql2/promise");
 
 const app = express();
 const port = process.env.PORT || 80;
@@ -35,6 +36,7 @@ app.get("/health", (_req, res) => {
       model: getModel(provider),
       timeoutMs: getAiTimeoutMs(),
       ready: hasProviderKey(provider),
+      hasMysql: Boolean(process.env.MYSQL_ADDRESS && process.env.MYSQL_USERNAME),
       hasDashScopeKey: Boolean(getDashScopeApiKey()),
       hasGeminiKey: Boolean(getGeminiApiKey()),
       hasOpenAIKey: Boolean(process.env.OPENAI_API_KEY),
@@ -70,6 +72,69 @@ app.get("/api/wx_openid", (req, res) => {
     code: -1,
     error: "Missing WeChat cloud container headers",
   });
+});
+
+app.get("/api/state", async (req, res, next) => {
+  try {
+    const result = await loadUserState(req);
+    res.send({ code: 0, data: result });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/state", async (req, res, next) => {
+  try {
+    const result = await saveUserState(req, req.body || {});
+    res.send({ code: 0, data: result });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete("/api/state", async (req, res, next) => {
+  try {
+    const result = await deleteUserState(req);
+    res.send({ code: 0, data: result });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/record", async (req, res, next) => {
+  try {
+    const result = await saveUserRecord(req, req.body?.record);
+    res.send({ code: 0, data: result });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete("/api/record", async (req, res, next) => {
+  try {
+    const result = await deleteUserRecord(req, req.body?.id);
+    res.send({ code: 0, data: result });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/photo", async (req, res, next) => {
+  try {
+    const result = await saveUserPhoto(req, req.body?.photo);
+    res.send({ code: 0, data: result });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete("/api/photo", async (req, res, next) => {
+  try {
+    const result = await deleteUserPhoto(req, req.body?.id);
+    res.send({ code: 0, data: result });
+  } catch (error) {
+    next(error);
+  }
 });
 
 app.post("/api/recognize-image", async (req, res, next) => {
@@ -143,6 +208,315 @@ app.use((error, _req, res, _next) => {
 app.listen(port, () => {
   console.log("启动成功", port);
 });
+
+let mysqlPool = null;
+let stateTableReadyPromise = null;
+
+async function loadUserState(req) {
+  const openid = requireOpenid(req);
+  await ensureStateTable();
+  const pool = getMysqlPool();
+  const [rows] = await pool.execute(
+    "SELECT openid, display_name, profile_json, goals_json, records_json, photos_json, draft_form_json, updated_at FROM body_log_user_state WHERE openid = ? LIMIT 1",
+    [openid]
+  );
+  const row = rows && rows[0];
+  if (!row) {
+    return {
+      ok: true,
+      exists: false,
+      state: null,
+    };
+  }
+
+  const [recordRows] = await pool.execute(
+    "SELECT record_json FROM body_log_records WHERE openid = ? ORDER BY record_date DESC, updated_at DESC",
+    [openid]
+  );
+  const [photoRows] = await pool.execute(
+    "SELECT photo_json FROM body_log_photos WHERE openid = ? ORDER BY photo_date DESC, updated_at DESC",
+    [openid]
+  );
+  const profile = parseJsonField(row.profile_json, {});
+  profile.openidText = profile.displayName || profile.openidText || "微信用户";
+  const records = recordRows.length
+    ? recordRows.map((item) => parseJsonField(item.record_json, null)).filter(Boolean)
+    : parseJsonField(row.records_json, []);
+  const photos = photoRows.length
+    ? photoRows.map((item) => parseJsonField(item.photo_json, null)).filter(Boolean)
+    : parseJsonField(row.photos_json, []);
+  return {
+    ok: true,
+    exists: true,
+    state: {
+      version: 1,
+      records,
+      photos,
+      goals: parseJsonField(row.goals_json, {}),
+      profile,
+      draftForm: parseJsonField(row.draft_form_json, null),
+      updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : new Date().toISOString(),
+    },
+  };
+}
+
+async function saveUserState(req, body) {
+  const openid = requireOpenid(req);
+  await ensureStateTable();
+  const pool = getMysqlPool();
+
+  const profile = sanitizeJsonObject(body.profile);
+  profile.openid = openid;
+  profile.openidText = profile.displayName || "微信用户";
+  const goals = sanitizeJsonObject(body.goals);
+  const records = Array.isArray(body.records) ? body.records : [];
+  const photos = Array.isArray(body.photos) ? body.photos : [];
+  const draftForm = body.draftForm && typeof body.draftForm === "object" ? body.draftForm : null;
+  const displayName = String(profile.displayName || "").trim().slice(0, 64);
+
+  await pool.execute(
+    [
+      "INSERT INTO body_log_user_state",
+      "(openid, display_name, profile_json, goals_json, records_json, photos_json, draft_form_json)",
+      "VALUES (?, ?, ?, ?, ?, ?, ?)",
+      "ON DUPLICATE KEY UPDATE",
+      "display_name = VALUES(display_name),",
+      "profile_json = VALUES(profile_json),",
+      "goals_json = VALUES(goals_json),",
+      "records_json = VALUES(records_json),",
+      "photos_json = VALUES(photos_json),",
+      "draft_form_json = VALUES(draft_form_json),",
+      "updated_at = CURRENT_TIMESTAMP",
+    ].join(" "),
+    [
+      openid,
+      displayName,
+      JSON.stringify(profile),
+      JSON.stringify(goals),
+      JSON.stringify(records),
+      JSON.stringify(photos),
+      draftForm ? JSON.stringify(draftForm) : null,
+    ]
+  );
+
+  await upsertRecords(openid, records);
+  await upsertPhotos(openid, photos);
+
+  return {
+    ok: true,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+async function saveUserRecord(req, record) {
+  const openid = requireOpenid(req);
+  if (!record || typeof record !== "object" || !record.id) {
+    throwHttp(400, "record.id is required");
+  }
+  await ensureStateTable();
+  await ensureUserStateShell(openid);
+  await upsertRecords(openid, [record]);
+  return { ok: true, id: record.id, updatedAt: new Date().toISOString() };
+}
+
+async function deleteUserRecord(req, id) {
+  const openid = requireOpenid(req);
+  if (!id) throwHttp(400, "record id is required");
+  await ensureStateTable();
+  await getMysqlPool().execute(
+    "DELETE FROM body_log_records WHERE openid = ? AND record_id = ?",
+    [openid, String(id)]
+  );
+  return { ok: true, id };
+}
+
+async function saveUserPhoto(req, photo) {
+  const openid = requireOpenid(req);
+  if (!photo || typeof photo !== "object" || !photo.id) {
+    throwHttp(400, "photo.id is required");
+  }
+  await ensureStateTable();
+  await ensureUserStateShell(openid);
+  await upsertPhotos(openid, [photo]);
+  return { ok: true, id: photo.id, updatedAt: new Date().toISOString() };
+}
+
+async function deleteUserPhoto(req, id) {
+  const openid = requireOpenid(req);
+  if (!id) throwHttp(400, "photo id is required");
+  await ensureStateTable();
+  await getMysqlPool().execute(
+    "DELETE FROM body_log_photos WHERE openid = ? AND photo_id = ?",
+    [openid, String(id)]
+  );
+  return { ok: true, id };
+}
+
+async function deleteUserState(req) {
+  const openid = requireOpenid(req);
+  await ensureStateTable();
+  const pool = getMysqlPool();
+  await pool.execute("DELETE FROM body_log_records WHERE openid = ?", [openid]);
+  await pool.execute("DELETE FROM body_log_photos WHERE openid = ?", [openid]);
+  await pool.execute("DELETE FROM body_log_user_state WHERE openid = ?", [openid]);
+  return { ok: true };
+}
+
+async function upsertRecords(openid, records) {
+  const items = Array.isArray(records) ? records.filter((item) => item && item.id) : [];
+  for (const record of items) {
+    await getMysqlPool().execute(
+      [
+        "INSERT INTO body_log_records",
+        "(openid, record_id, record_date, record_json)",
+        "VALUES (?, ?, ?, ?)",
+        "ON DUPLICATE KEY UPDATE",
+        "record_date = VALUES(record_date),",
+        "record_json = VALUES(record_json),",
+        "updated_at = CURRENT_TIMESTAMP",
+      ].join(" "),
+      [
+        openid,
+        String(record.id),
+        normalizeDateForSql(record.date),
+        JSON.stringify(record),
+      ]
+    );
+  }
+}
+
+async function ensureUserStateShell(openid) {
+  await getMysqlPool().execute(
+    [
+      "INSERT INTO body_log_user_state",
+      "(openid, display_name, profile_json, goals_json, records_json, photos_json, draft_form_json)",
+      "VALUES (?, '', '{}', '{}', '[]', '[]', NULL)",
+      "ON DUPLICATE KEY UPDATE openid = openid",
+    ].join(" "),
+    [openid]
+  );
+}
+
+async function upsertPhotos(openid, photos) {
+  const items = Array.isArray(photos) ? photos.filter((item) => item && item.id) : [];
+  for (const photo of items) {
+    await getMysqlPool().execute(
+      [
+        "INSERT INTO body_log_photos",
+        "(openid, photo_id, photo_date, photo_json)",
+        "VALUES (?, ?, ?, ?)",
+        "ON DUPLICATE KEY UPDATE",
+        "photo_date = VALUES(photo_date),",
+        "photo_json = VALUES(photo_json),",
+        "updated_at = CURRENT_TIMESTAMP",
+      ].join(" "),
+      [
+        openid,
+        String(photo.id),
+        normalizeDateForSql(photo.date),
+        JSON.stringify(photo),
+      ]
+    );
+  }
+}
+
+function requireOpenid(req) {
+  const fromHeader = req.headers["x-wx-openid"];
+  if (fromHeader) return String(fromHeader);
+  if (process.env.NODE_ENV !== "production" && req.body && req.body.openid) return String(req.body.openid);
+  throwHttp(401, "Missing WeChat openid. Please call through wx.cloud.callContainer.");
+}
+
+function getMysqlPool() {
+  if (mysqlPool) return mysqlPool;
+  const username = process.env.MYSQL_USERNAME;
+  const password = process.env.MYSQL_PASSWORD;
+  const address = process.env.MYSQL_ADDRESS || "";
+  const [host, portText] = address.split(":");
+  if (!username || !password || !host) {
+    throwHttp(503, "Missing MySQL environment variables");
+  }
+
+  mysqlPool = mysql.createPool({
+    host,
+    port: Number(portText) || 3306,
+    user: username,
+    password,
+    database: process.env.MYSQL_DATABASE || "nodejs_demo",
+    waitForConnections: true,
+    connectionLimit: 4,
+    charset: "utf8mb4",
+  });
+  return mysqlPool;
+}
+
+async function ensureStateTable() {
+  if (!stateTableReadyPromise) {
+    stateTableReadyPromise = (async () => {
+      const pool = getMysqlPool();
+      await pool.execute(`
+        CREATE TABLE IF NOT EXISTS body_log_user_state (
+          openid VARCHAR(128) NOT NULL PRIMARY KEY,
+          display_name VARCHAR(128) DEFAULT '',
+          profile_json MEDIUMTEXT NOT NULL,
+          goals_json MEDIUMTEXT NOT NULL,
+          records_json LONGTEXT NOT NULL,
+          photos_json LONGTEXT NOT NULL,
+          draft_form_json MEDIUMTEXT NULL,
+          created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          KEY idx_updated_at (updated_at)
+        ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+      `);
+      await pool.execute(`
+        CREATE TABLE IF NOT EXISTS body_log_records (
+          openid VARCHAR(128) NOT NULL,
+          record_id VARCHAR(80) NOT NULL,
+          record_date DATE NULL,
+          record_json LONGTEXT NOT NULL,
+          created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          PRIMARY KEY (openid, record_id),
+          KEY idx_openid_date (openid, record_date)
+        ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+      `);
+      await pool.execute(`
+        CREATE TABLE IF NOT EXISTS body_log_photos (
+          openid VARCHAR(128) NOT NULL,
+          photo_id VARCHAR(80) NOT NULL,
+          photo_date DATE NULL,
+          photo_json MEDIUMTEXT NOT NULL,
+          created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          PRIMARY KEY (openid, photo_id),
+          KEY idx_openid_date (openid, photo_date)
+        ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+      `);
+    })().catch((error) => {
+      stateTableReadyPromise = null;
+      throw error;
+    });
+  }
+  await stateTableReadyPromise;
+}
+
+function normalizeDateForSql(value) {
+  const text = String(value || "").slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : null;
+}
+
+function parseJsonField(value, fallback) {
+  if (value === null || value === undefined || value === "") return fallback;
+  try {
+    return JSON.parse(Buffer.isBuffer(value) ? value.toString("utf8") : String(value));
+  } catch (_error) {
+    return fallback;
+  }
+}
+
+function sanitizeJsonObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
 
 async function recognizeImage(body) {
   const provider = getProvider();

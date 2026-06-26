@@ -7,6 +7,11 @@
 - `GET /health`：健康检查。
 - `POST /api/count`：保留微信云托管模板测试接口。
 - `GET /api/wx_openid`：保留微信云托管模板 OpenID 测试接口。
+- `GET /api/state`：读取当前微信用户的云端资料、目标、记录、照片索引。
+- `POST /api/state`：保存当前微信用户的资料、目标和草稿。
+- `DELETE /api/state`：删除当前微信用户的云端资料、记录和照片索引。
+- `POST /api/record` / `DELETE /api/record`：增量保存或删除单条训练饮食记录。
+- `POST /api/photo` / `DELETE /api/photo`：增量保存或删除单张体型照片元数据。
 - `POST /api/recognize-image`：图片识别接口。
 - `POST /api/recognize-image-url`：图片临时 URL 识别接口，推荐配合微信云存储使用。
 - `POST /api/recognize-upload`：图片文件上传识别接口，供小程序端绕过 `callContainer` 请求体大小限制。
@@ -29,6 +34,16 @@ MAX_BODY_SIZE=24mb
 服务会优先使用阿里云百炼通义千问视觉模型。如果以后也配置了 Gemini 或 OpenAI，可以通过 `AI_PROVIDER=gemini` 或 `AI_PROVIDER=openai` 手动切换。
 
 不要把 API Key、数据库密码或其他密钥提交到 GitHub。
+
+## 数据存储
+
+云托管会使用环境变量里的 MySQL 自动创建三张表：
+
+- `body_log_user_state`：每个微信 `openid` 的个人资料、目标和当前草稿。
+- `body_log_records`：饮食、体重、训练、攀岩和健康数据记录，一条记录一行。
+- `body_log_photos`：体型照片元数据，一张照片一行。
+
+体型照片文件本身通过小程序端 `wx.cloud.uploadFile` 上传到微信云存储，路径类似 `progress/2026-06/photo_xxx.jpg`；数据库只保存 `cloudFileID` 和照片元数据。识图用的临时图片仍然上传到 `recognition/` 路径，并在识别后删除。
 
 ## 小程序调用示例
 
