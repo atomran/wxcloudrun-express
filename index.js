@@ -185,14 +185,19 @@ async function recognizeUpload(body, file) {
 }
 
 async function estimateDietText(body) {
-  const provider = getProvider();
-  if (!hasProviderKey(provider)) {
-    throwHttp(503, `Missing API key for provider: ${provider}`);
-  }
-
   const text = String(body.text || "").trim();
   if (!text) {
     throwHttp(400, "text is required");
+  }
+
+  const reference = estimateReferenceNutrition(text);
+  if (reference && reference.calories > 0) {
+    return normalizeReferenceDietResult(reference, text, body.mealLabel, body.date);
+  }
+
+  const provider = getProvider();
+  if (!hasProviderKey(provider)) {
+    throwHttp(503, `Missing API key for provider: ${provider}`);
   }
 
   const prompt = buildDietTextPrompt(body.date, body.mealLabel, text);
@@ -715,6 +720,27 @@ function calibrateDietTextResult(result, text, mealLabel) {
     }
   };
   return next;
+}
+
+function normalizeReferenceDietResult(reference, text, mealLabel, date) {
+  const label = mealLabel || "饮食";
+  return normalizeResult({
+    type: "diet",
+    confidence: 0.92,
+    summary: `${label}约 ${Math.round(reference.calories)} kcal`,
+    warnings: [`已按常见食物营养表估算：${reference.evidence.join("、")}`],
+    rawText: text,
+    draft: {
+      date,
+      diet: {
+        calories: roundMacro(reference.calories),
+        protein: roundMacro(reference.protein),
+        carbs: roundMacro(reference.carbs),
+        fat: roundMacro(reference.fat),
+        meals: `${label}: ${text}`
+      }
+    }
+  }, "diet", date, text);
 }
 
 function estimateReferenceNutrition(text) {
